@@ -8,6 +8,12 @@ const (
 	ContractStatusExpired      = "expired"
 )
 
+// SignerStatus 签署方状态：待签署 -> 已签署。
+const (
+	SignerStatusPending = "pending"
+	SignerStatusSigned  = "signed"
+)
+
 // TicketType 法律工单问题类型。
 const (
 	TicketTypeLabor      = "labor"

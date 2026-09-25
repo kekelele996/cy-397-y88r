@@ -104,67 +104,145 @@ func (s *ContractService) ListForUser(userID uint64, status string, page, pageSi
 	return list, total, nil
 }
 
-// Submit 提交合同进入待签署状态，并记录签署方信息。
+// Submit 提交合同进入待签署状态，并按名单顺序登记签署方（名单顺序即签署顺序）。
 func (s *ContractService) Submit(userID, contractID uint64, signers []dto.SignerInput) error {
-	contract, err := s.contractRepo.FindByIDForUser(contractID, userID)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return dto.NotFoundError("contract not found")
-		}
-		return fmt.Errorf("submit contract: %w", err)
+	if len(signers) == 0 {
+		return dto.ValidationError("signers must not be empty")
 	}
-	if !constants.CanTransitionContract(contract.Status, constants.ContractStatusPendingSign) {
-		return dto.InvalidTransitionError(fmt.Sprintf("cannot submit contract in status %q", contract.Status))
-	}
-	contract.Status = constants.ContractStatusPendingSign
-	if err := s.contractRepo.Update(contract); err != nil {
-		return fmt.Errorf("submit contract: update: %w", err)
-	}
+	seen := make(map[string]bool, len(signers))
 	for _, signer := range signers {
-		if err := s.contractRepo.AddSigner(&model.ContractSigner{
-			ContractID: contract.ID,
-			Name:       signer.Name,
-			Role:       signer.Role,
-		}); err != nil {
-			return fmt.Errorf("submit contract: add signer: %w", err)
+		if seen[signer.Name] {
+			return dto.ValidationError(fmt.Sprintf("duplicate signer name %q", signer.Name))
 		}
+		seen[signer.Name] = true
 	}
-	s.logger.Info("contract submitted", "contract_id", contract.ID)
+	err := s.contractRepo.WithTransaction(func(txRepo repository.ContractRepository) error {
+		contract, err := txRepo.FindByIDForUser(contractID, userID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return dto.NotFoundError("contract not found")
+			}
+			return fmt.Errorf("submit contract: %w", err)
+		}
+		if !constants.CanTransitionContract(contract.Status, constants.ContractStatusPendingSign) {
+			return dto.InvalidTransitionError(fmt.Sprintf("cannot submit contract in status %q", contract.Status))
+		}
+		contract.Status = constants.ContractStatusPendingSign
+		if err := txRepo.Update(contract); err != nil {
+			return fmt.Errorf("submit contract: update: %w", err)
+		}
+		// 清理可能残留的旧名单后，按提交顺序重建签署名单。
+		if err := txRepo.DeleteSigners(contract.ID); err != nil {
+			return fmt.Errorf("submit contract: reset signers: %w", err)
+		}
+		for i, signer := range signers {
+			if err := txRepo.AddSigner(&model.ContractSigner{
+				ContractID: contract.ID,
+				Seq:        i + 1,
+				Name:       signer.Name,
+				Role:       signer.Role,
+				Status:     constants.SignerStatusPending,
+			}); err != nil {
+				return fmt.Errorf("submit contract: add signer: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	s.logger.Info("contract submitted", "contract_id", contractID, "signer_count", len(signers))
 	return nil
 }
 
-// Sign 将待签署合同置为已签署，记录签署时间和签署方。
-func (s *ContractService) Sign(userID, contractID uint64, signerName, signerRole, signInfo string) error {
-	contract, err := s.contractRepo.FindByIDForUser(contractID, userID)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return dto.NotFoundError("contract not found")
+// Sign 名单中的当前签署人完成自己的签署；所有人签署完成后合同才置为已签署并记录完成时间。
+// 返回签署后的合同状态（pending_signed 或 signed）。
+func (s *ContractService) Sign(userID, contractID uint64, signerName, signInfo string) (string, error) {
+	var finalStatus string
+	err := s.contractRepo.WithTransaction(func(txRepo repository.ContractRepository) error {
+		contract, err := txRepo.FindByIDForUser(contractID, userID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return dto.NotFoundError("contract not found")
+			}
+			return fmt.Errorf("sign contract: %w", err)
 		}
-		return fmt.Errorf("sign contract: %w", err)
+		if contract.Status != constants.ContractStatusPendingSign {
+			return dto.InvalidTransitionError(fmt.Sprintf("cannot sign contract in status %q", contract.Status))
+		}
+		signers, err := txRepo.ListSigners(contractID)
+		if err != nil {
+			return fmt.Errorf("sign contract: list signers: %w", err)
+		}
+		current := currentPendingSigner(signers)
+		if current == nil {
+			return dto.ConflictError("all signers have already signed")
+		}
+		if current.Name != signerName {
+			return signerMismatchError(signers, signerName, current.Name)
+		}
+		now := time.Now()
+		current.Status = constants.SignerStatusSigned
+		current.SignedAt = &now
+		current.SignInfo = signInfo
+		if err := txRepo.UpdateSigner(current); err != nil {
+			if errors.Is(err, repository.ErrConcurrentModification) {
+				return dto.ConflictError("signing state changed, please retry")
+			}
+			return fmt.Errorf("sign contract: update signer: %w", err)
+		}
+		finalStatus = constants.ContractStatusPendingSign
+		if allSignersSigned(signers) {
+			contract.SignedAt = &now
+			if err := txRepo.CompleteIfPending(contract); err != nil {
+				if errors.Is(err, repository.ErrConcurrentModification) {
+					return dto.ConflictError("contract state changed, please retry")
+				}
+				return fmt.Errorf("sign contract: complete: %w", err)
+			}
+			finalStatus = constants.ContractStatusSigned
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
-	if !constants.CanTransitionContract(contract.Status, constants.ContractStatusSigned) {
-		return dto.InvalidTransitionError(fmt.Sprintf("cannot sign contract in status %q", contract.Status))
+	s.logger.Info("contract signed by signer", "contract_id", contractID, "signer", signerName, "contract_status", finalStatus)
+	return finalStatus, nil
+}
+
+// currentPendingSigner 返回按顺序第一个尚未签署的签署方。
+func currentPendingSigner(signers []model.ContractSigner) *model.ContractSigner {
+	for i := range signers {
+		if signers[i].Status != constants.SignerStatusSigned {
+			return &signers[i]
+		}
 	}
-	now := time.Now()
-	contract.Status = constants.ContractStatusSigned
-	contract.SignedAt = &now
-	if err := s.contractRepo.Update(contract); err != nil {
-		return fmt.Errorf("sign contract: update: %w", err)
-	}
-	if signerRole == "" {
-		signerRole = "签署方"
-	}
-	if err := s.contractRepo.AddSigner(&model.ContractSigner{
-		ContractID: contract.ID,
-		Name:       signerName,
-		Role:       signerRole,
-		SignedAt:   &now,
-		SignInfo:   signInfo,
-	}); err != nil {
-		return fmt.Errorf("sign contract: add signer: %w", err)
-	}
-	s.logger.Info("contract signed", "contract_id", contract.ID, "signer", signerName)
 	return nil
+}
+
+// allSignersSigned 判断名单中的签署方是否全部完成签署。
+func allSignersSigned(signers []model.ContractSigner) bool {
+	for i := range signers {
+		if signers[i].Status != constants.SignerStatusSigned {
+			return false
+		}
+	}
+	return len(signers) > 0
+}
+
+// signerMismatchError 根据请求签署人在名单中的位置构造可读的顺序错误。
+func signerMismatchError(signers []model.ContractSigner, signerName, currentName string) error {
+	for i := range signers {
+		if signers[i].Name != signerName {
+			continue
+		}
+		if signers[i].Status == constants.SignerStatusSigned {
+			return dto.ConflictError(fmt.Sprintf("signer %q has already signed", signerName))
+		}
+		return dto.ConflictError(fmt.Sprintf("waiting for previous signer %q to sign first", currentName))
+	}
+	return dto.ValidationError(fmt.Sprintf("signer %q is not in the signing list", signerName))
 }
 
 // Expire 将合同置为已过期。

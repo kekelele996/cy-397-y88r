@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/contractapi/contractapi/internal/constants"
 	"github.com/contractapi/contractapi/internal/model"
 )
 
@@ -16,8 +17,15 @@ type ContractRepository interface {
 	FindByIDForUser(id, userID uint64) (*model.Contract, error)
 	ListByUser(userID uint64, status string, offset, limit int) ([]model.Contract, int64, error)
 	Update(contract *model.Contract) error
+	// CompleteIfPending 仅当合同仍处于待签署状态时置为已签署，否则返回 ErrConcurrentModification。
+	CompleteIfPending(contract *model.Contract) error
 	AddSigner(signer *model.ContractSigner) error
+	// UpdateSigner 仅当签署方仍处于待签署状态时更新签署结果，否则返回 ErrConcurrentModification。
+	UpdateSigner(signer *model.ContractSigner) error
+	DeleteSigners(contractID uint64) error
 	ListSigners(contractID uint64) ([]model.ContractSigner, error)
+	// WithTransaction 在单个事务内执行多个仓储操作，fn 返回错误时整体回滚。
+	WithTransaction(fn func(txRepo ContractRepository) error) error
 }
 
 type contractRepository struct {
@@ -81,6 +89,23 @@ func (r *contractRepository) Update(contract *model.Contract) error {
 	return nil
 }
 
+func (r *contractRepository) CompleteIfPending(contract *model.Contract) error {
+	result := r.db.Model(&model.Contract{}).
+		Where("id = ? AND status = ?", contract.ID, constants.ContractStatusPendingSign).
+		Updates(map[string]any{
+			"status":    constants.ContractStatusSigned,
+			"signed_at": contract.SignedAt,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("complete contract: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrConcurrentModification
+	}
+	contract.Status = constants.ContractStatusSigned
+	return nil
+}
+
 func (r *contractRepository) AddSigner(signer *model.ContractSigner) error {
 	if err := r.db.Create(signer).Error; err != nil {
 		return fmt.Errorf("add contract signer: %w", err)
@@ -88,10 +113,43 @@ func (r *contractRepository) AddSigner(signer *model.ContractSigner) error {
 	return nil
 }
 
+func (r *contractRepository) UpdateSigner(signer *model.ContractSigner) error {
+	result := r.db.Model(&model.ContractSigner{}).
+		Where("id = ? AND status = ?", signer.ID, constants.SignerStatusPending).
+		Updates(map[string]any{
+			"status":    signer.Status,
+			"signed_at": signer.SignedAt,
+			"sign_info": signer.SignInfo,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("update contract signer: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrConcurrentModification
+	}
+	return nil
+}
+
+func (r *contractRepository) DeleteSigners(contractID uint64) error {
+	if err := r.db.Where("contract_id = ?", contractID).Delete(&model.ContractSigner{}).Error; err != nil {
+		return fmt.Errorf("delete contract signers: %w", err)
+	}
+	return nil
+}
+
 func (r *contractRepository) ListSigners(contractID uint64) ([]model.ContractSigner, error) {
 	var list []model.ContractSigner
-	if err := r.db.Where("contract_id = ?", contractID).Order("id ASC").Find(&list).Error; err != nil {
+	if err := r.db.Where("contract_id = ?", contractID).Order("seq ASC, id ASC").Find(&list).Error; err != nil {
 		return nil, fmt.Errorf("list contract signers: %w", err)
 	}
 	return list, nil
+}
+
+func (r *contractRepository) WithTransaction(fn func(txRepo ContractRepository) error) error {
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		return fn(NewContractRepository(tx))
+	}); err != nil {
+		return fmt.Errorf("contract transaction: %w", err)
+	}
+	return nil
 }

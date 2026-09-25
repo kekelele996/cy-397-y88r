@@ -100,6 +100,72 @@ paths:
         - { name: page_size, in: query, schema: { type: integer, default: 10 } }
       responses:
         '200': { $ref: '#/components/responses/Success' }
+  /api/v1/contracts/{id}/submit:
+    post:
+      summary: 提交合同进入待签署，按名单顺序登记签署方
+      description: signers 数组顺序即签署顺序；签署方姓名不可重复；提交后合同状态变为 pending_signed。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signers]
+              properties:
+                signers:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [name, role]
+                    properties:
+                      name: { type: string, example: 张三 }
+                      role: { type: string, example: 甲方 }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /api/v1/contracts/{id}/sign:
+    post:
+      summary: 当前签署人按顺序签署合同
+      description: >-
+        仅名单中当前待签署的人可以签署，前一位未签署时后一位需等待（返回 409）；
+        签署人重复签署或不在名单中会被拒绝。签署后记录该签署方的签署时间；
+        全部签署方完成后合同才置为 signed 并记录最终完成时间，签署记录与合同状态在同一事务中保存。
+        signer_name 缺省时取当前登录用户名。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                signer_name: { type: string, example: 张三 }
+                sign_info: { type: string, example: 本人确认 }
+      responses:
+        '200':
+          description: 返回签署后的合同状态（pending_signed 或 signed）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+  /api/v1/contracts/{id}/signers:
+    get:
+      summary: 签署方列表（按签署顺序，含各人状态与签署时间）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 签署方列表，status 为 pending/signed，signed_at 为签署时间
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
   /api/v1/tickets:
     post:
       summary: 提交法律咨询工单

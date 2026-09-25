@@ -13,9 +13,9 @@ type CreateContractRequest struct {
 	Variables  map[string]string `json:"variables"`
 }
 
-// SubmitContractRequest 提交待签署请求。
+// SubmitContractRequest 提交待签署请求，signers 顺序即签署顺序。
 type SubmitContractRequest struct {
-	Signers []SignerInput `json:"signers"`
+	Signers []SignerInput `json:"signers" binding:"required,min=1,dive"`
 }
 
 // SignerInput 签署方输入。
@@ -24,10 +24,9 @@ type SignerInput struct {
 	Role string `json:"role" binding:"required,max=64"`
 }
 
-// SignContractRequest 签署合同请求。
+// SignContractRequest 签署合同请求，签署人须为名单中当前待签署的人。
 type SignContractRequest struct {
 	SignerName string `json:"signer_name" binding:"max=128"`
-	SignerRole string `json:"signer_role" binding:"max=64"`
 	SignInfo   string `json:"sign_info" binding:"max=512"`
 }
 

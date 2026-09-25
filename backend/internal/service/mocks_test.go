@@ -1,6 +1,9 @@
 package service_test
 
 import (
+	"sort"
+
+	"github.com/contractapi/contractapi/internal/constants"
 	"github.com/contractapi/contractapi/internal/model"
 	"github.com/contractapi/contractapi/internal/repository"
 )
@@ -143,13 +146,14 @@ func (m *mockFavoriteRepo) ListByUser(userID uint64, offset, limit int) ([]model
 }
 
 type mockContractRepo struct {
-	contracts map[uint64]*model.Contract
-	signers   map[uint64][]model.ContractSigner
-	nextID    uint64
+	contracts   map[uint64]*model.Contract
+	signers     map[uint64][]model.ContractSigner
+	nextID      uint64
+	nextSignerID uint64
 }
 
 func newMockContractRepo() *mockContractRepo {
-	return &mockContractRepo{contracts: map[uint64]*model.Contract{}, signers: map[uint64][]model.ContractSigner{}, nextID: 1}
+	return &mockContractRepo{contracts: map[uint64]*model.Contract{}, signers: map[uint64][]model.ContractSigner{}, nextID: 1, nextSignerID: 1}
 }
 
 func (m *mockContractRepo) Create(contract *model.Contract) error {
@@ -197,13 +201,63 @@ func (m *mockContractRepo) Update(contract *model.Contract) error {
 	return nil
 }
 
+func (m *mockContractRepo) CompleteIfPending(contract *model.Contract) error {
+	existing, ok := m.contracts[contract.ID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if existing.Status != constants.ContractStatusPendingSign {
+		return repository.ErrConcurrentModification
+	}
+	existing.Status = constants.ContractStatusSigned
+	existing.SignedAt = contract.SignedAt
+	contract.Status = constants.ContractStatusSigned
+	return nil
+}
+
 func (m *mockContractRepo) AddSigner(signer *model.ContractSigner) error {
+	signer.ID = m.nextSignerID
+	m.nextSignerID++
 	m.signers[signer.ContractID] = append(m.signers[signer.ContractID], *signer)
 	return nil
 }
 
+func (m *mockContractRepo) UpdateSigner(signer *model.ContractSigner) error {
+	list := m.signers[signer.ContractID]
+	for i := range list {
+		if list[i].ID != signer.ID {
+			continue
+		}
+		if list[i].Status != constants.SignerStatusPending {
+			return repository.ErrConcurrentModification
+		}
+		list[i] = *signer
+		m.signers[signer.ContractID] = list
+		return nil
+	}
+	return repository.ErrNotFound
+}
+
+func (m *mockContractRepo) DeleteSigners(contractID uint64) error {
+	delete(m.signers, contractID)
+	return nil
+}
+
 func (m *mockContractRepo) ListSigners(contractID uint64) ([]model.ContractSigner, error) {
-	return m.signers[contractID], nil
+	list := m.signers[contractID]
+	sorted := make([]model.ContractSigner, len(list))
+	copy(sorted, list)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Seq != sorted[j].Seq {
+			return sorted[i].Seq < sorted[j].Seq
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	return sorted, nil
+}
+
+func (m *mockContractRepo) WithTransaction(fn func(txRepo repository.ContractRepository) error) error {
+	return fn(m)
 }
 
 type mockTicketRepo struct {

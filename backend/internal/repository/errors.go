@@ -6,4 +6,6 @@ import "errors"
 var (
 	ErrNotFound      = errors.New("record not found")
 	ErrDuplicateKey  = errors.New("duplicate key")
+	// ErrConcurrentModification 条件更新未命中，表示记录已被并发修改。
+	ErrConcurrentModification = errors.New("concurrent modification")
 )

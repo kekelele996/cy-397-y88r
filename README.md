@@ -33,6 +33,7 @@ docker compose --env-file .env down -v --remove-orphans
 - 合同模板管理：租赁合同、劳动合同、借款合同、合作协议、保密协议。
 - 合同生成：选择模板并填充变量，生成纯文本 / HTML 合同，支持 wkhtmltopdf 导出 PDF。
 - 合同签署状态管理：草稿 → 待签署 → 已签署 → 已过期，记录签署时间与签署方信息。
+- 多人顺序签署：按提交时填写的名单顺序逐人确认，前一位未签署时后一位需等待；每人签署后记录签署时间，名单可查看各人完成情况；全部签署方完成后合同才置为已签署并记录最终完成时间，签署记录与合同状态在同一事务中保存。
 - 法律工单系统：提交劳动纠纷 / 合同纠纷 / 房产纠纷 / 知识产权 / 其他类型工单。
 - 工单流转：待处理 → 处理中 → 已回复 → 已关闭，支持文字与附件回复。
 - 常见法律知识库：FAQ 分类检索与关键词搜索。
@@ -116,10 +117,10 @@ go run ./cmd/server
 | POST | /api/v1/contracts | 填充生成合同 | 是 |
 | GET | /api/v1/contracts | 用户合同库 | 是 |
 | GET | /api/v1/contracts/:id | 合同详情 | 是 |
-| POST | /api/v1/contracts/:id/submit | 提交待签署 | 是 |
-| POST | /api/v1/contracts/:id/sign | 签署合同 | 是 |
+| POST | /api/v1/contracts/:id/submit | 提交待签署（按名单顺序登记签署方） | 是 |
+| POST | /api/v1/contracts/:id/sign | 当前签署人签署（须轮到本人） | 是 |
 | POST | /api/v1/contracts/:id/expire | 合同过期 | 是 |
-| GET | /api/v1/contracts/:id/signers | 签署方列表 | 是 |
+| GET | /api/v1/contracts/:id/signers | 签署方列表（含顺序、状态、签署时间） | 是 |
 | GET | /api/v1/contracts/:id/export | 导出 PDF | 是 |
 | POST | /api/v1/tickets | 提交法律工单 | 是 |
 | GET | /api/v1/tickets | 工单列表 | 是 |
