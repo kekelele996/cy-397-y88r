@@ -100,6 +100,86 @@ paths:
         - { name: page_size, in: query, schema: { type: integer, default: 10 } }
       responses:
         '200': { $ref: '#/components/responses/Success' }
+  /api/v1/contracts/{id}/submit:
+    post:
+      summary: 提交合同进入待签署，并按名单顺序建立签署方
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signers]
+              properties:
+                signers:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [name, role]
+                    properties:
+                      name: { type: string, example: 张三 }
+                      role: { type: string, example: 甲方 }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /api/v1/contracts/{id}/sign:
+    post:
+      summary: 当前轮到的签署方签署（按名单顺序逐人签署，全部完成后合同才变为已签署）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signer_name]
+              properties:
+                signer_name: { type: string, example: 张三 }
+                signer_role: { type: string, example: 甲方 }
+                sign_info: { type: string, example: 本人确认 }
+      responses:
+        '200':
+          description: 签署成功；completed 为 true 时合同状态变为 signed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Response'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          contract_id: { type: integer }
+                          status: { type: string, enum: [pending_signed, signed] }
+                          completed: { type: boolean }
+                          signed_count: { type: integer, example: 1 }
+                          total_count: { type: integer, example: 2 }
+                          signer: { $ref: '#/components/schemas/ContractSigner' }
+  /api/v1/contracts/{id}/signers:
+    get:
+      summary: 签署方名单（按签署顺位返回，可查看各方是否已签署及签署时间）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 签署方列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Response'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ContractSigner' }
   /api/v1/tickets:
     post:
       summary: 提交法律咨询工单
@@ -148,6 +228,17 @@ components:
         code: { type: integer, example: 0 }
         message: { type: string, example: ok }
         data: { type: object }
+    ContractSigner:
+      type: object
+      properties:
+        id: { type: integer }
+        contract_id: { type: integer }
+        sign_order: { type: integer, example: 1, description: 签署顺位，从 1 开始 }
+        name: { type: string, example: 张三 }
+        role: { type: string, example: 甲方 }
+        signed_at: { type: string, format: date-time, nullable: true }
+        sign_info: { type: string }
+        created_at: { type: string, format: date-time }
   responses:
     Success:
       description: 成功

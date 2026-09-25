@@ -51,13 +51,15 @@ CREATE TABLE IF NOT EXISTS contracts (
 CREATE TABLE IF NOT EXISTS contract_signers (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     contract_id BIGINT UNSIGNED NOT NULL,
+    sign_order INT NOT NULL DEFAULT 0 COMMENT '提交时填写的签署顺位，从 1 开始，按顺位依次签署',
     name VARCHAR(128) NOT NULL,
     role VARCHAR(64) NOT NULL,
     signed_at DATETIME(3) NULL,
     sign_info VARCHAR(512) NOT NULL DEFAULT '',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
-    KEY idx_contract_signers_contract_id (contract_id)
+    KEY idx_contract_signers_contract_id (contract_id),
+    KEY idx_contract_signers_order (contract_id, sign_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS legal_tickets (

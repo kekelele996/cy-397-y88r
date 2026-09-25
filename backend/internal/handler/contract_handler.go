@@ -101,11 +101,19 @@ func (h *ContractHandler) Sign(c *gin.Context) {
 	if signerName == "" {
 		signerName = middleware.CurrentUsername(c)
 	}
-	if err := h.contractService.Sign(middleware.CurrentUserID(c), id, signerName, req.SignerRole, req.SignInfo); err != nil {
+	result, err := h.contractService.Sign(middleware.CurrentUserID(c), id, signerName, req.SignerRole, req.SignInfo)
+	if err != nil {
 		fail(c, err)
 		return
 	}
-	dto.Success(c, gin.H{"contract_id": id, "status": constants.ContractStatusSigned})
+	dto.Success(c, gin.H{
+		"contract_id":  id,
+		"status":       result.Status,
+		"completed":    result.Completed,
+		"signed_count": result.SignedCount,
+		"total_count":  result.TotalCount,
+		"signer":       result.Signer,
+	})
 }
 
 // Expire POST /api/v1/contracts/:id/expire

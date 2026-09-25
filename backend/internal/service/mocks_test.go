@@ -1,6 +1,9 @@
 package service_test
 
 import (
+	"time"
+
+	"github.com/contractapi/contractapi/internal/constants"
 	"github.com/contractapi/contractapi/internal/model"
 	"github.com/contractapi/contractapi/internal/repository"
 )
@@ -198,12 +201,56 @@ func (m *mockContractRepo) Update(contract *model.Contract) error {
 }
 
 func (m *mockContractRepo) AddSigner(signer *model.ContractSigner) error {
+	signer.ID = uint64(len(m.signers[signer.ContractID]) + 1)
 	m.signers[signer.ContractID] = append(m.signers[signer.ContractID], *signer)
 	return nil
 }
 
 func (m *mockContractRepo) ListSigners(contractID uint64) ([]model.ContractSigner, error) {
-	return m.signers[contractID], nil
+	return append([]model.ContractSigner(nil), m.signers[contractID]...), nil
+}
+
+func (m *mockContractRepo) InTransaction(fn func(txRepo repository.ContractRepository) error) error {
+	return fn(m)
+}
+
+func (m *mockContractRepo) FindByIDForUpdate(id uint64) (*model.Contract, error) {
+	return m.FindByID(id)
+}
+
+func (m *mockContractRepo) ListSignersForUpdate(contractID uint64) ([]model.ContractSigner, error) {
+	return m.ListSigners(contractID)
+}
+
+func (m *mockContractRepo) MarkSignerSigned(signerID uint64, signedAt time.Time, signInfo string) error {
+	for contractID, signers := range m.signers {
+		for i := range signers {
+			if signers[i].ID != signerID {
+				continue
+			}
+			if signers[i].SignedAt != nil {
+				return repository.ErrAlreadySigned
+			}
+			signers[i].SignedAt = &signedAt
+			signers[i].SignInfo = signInfo
+			m.signers[contractID] = signers
+			return nil
+		}
+	}
+	return repository.ErrNotFound
+}
+
+func (m *mockContractRepo) MarkContractSigned(contractID uint64, signedAt time.Time) error {
+	contract, ok := m.contracts[contractID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if contract.Status != constants.ContractStatusPendingSign {
+		return repository.ErrAlreadySigned
+	}
+	contract.Status = constants.ContractStatusSigned
+	contract.SignedAt = &signedAt
+	return nil
 }
 
 type mockTicketRepo struct {
@@ -270,4 +317,3 @@ func (m *mockTicketRepo) AddReply(reply *model.TicketReply) error {
 func (m *mockTicketRepo) ListReplies(ticketID uint64) ([]model.TicketReply, error) {
 	return m.replies[ticketID], nil
 }
-
